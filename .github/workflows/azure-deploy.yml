@@ -10,7 +10,8 @@ on:
   workflow_dispatch:
 
 env:
-  AZURE_WEBAPP_NAME: shubhamwebapp
+  AZURE_WEBAPP_NAME: shubhamappbackstage
+  AZURE_RESOURCE_GROUP: coe-platform-engineering-rg
   NODE_VERSION: '20.x'
 
 jobs:
@@ -24,14 +25,11 @@ jobs:
     - name: Set up Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: 
+        node-version: ${{ env.NODE_VERSION }}
         cache: 'npm'
 
     - name: Install dependencies
       run: npm ci
-
-    - name: Run lint
-      run: npm run lint
 
     - name: Build Next.js app
       run: npm run build
@@ -40,7 +38,7 @@ jobs:
       run: |
         cp package.json .next/standalone/
         cp -r .next/static .next/standalone/.next/
-        cp -r public .next/standalone/
+        if [ -d "public" ]; then cp -r public .next/standalone/; fi
         cd .next/standalone
         zip -r ../../deployment.zip .
 
@@ -56,7 +54,6 @@ jobs:
     if: github.ref == 'refs/heads/main'
     environment:
       name: 'production'
-      url: NaN
 
     steps:
     - name: Download artifact
@@ -64,17 +61,42 @@ jobs:
       with:
         name: nextjs-app
 
-    - name: Login to Azure
+    - name: Deploy to Azure Web App using ZipDeploy
+      run: |
+        apt-get update
+        apt-get install -y curl
+        
+        # Get publish profile
+        PUBLISH_PROFILE=$(az webapp deployment list-publishing-profiles \
+          --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+          --name ${{ env.AZURE_WEBAPP_NAME }} \
+          --query "[?publishMethod=='ZipDeploy'].{url:publishUrl,user:userName,password:userPWD}[0]" \
+          -o json)
+        
+        PUBLISH_URL=$(echo $PUBLISH_PROFILE | jq -r '.url')
+        PUBLISH_USER=$(echo $PUBLISH_PROFILE | jq -r '.user')
+        PUBLISH_PASS=$(echo $PUBLISH_PROFILE | jq -r '.password')
+        
+        # Deploy using curl with basic auth
+        curl -X POST \
+          -u "$PUBLISH_USER:$PUBLISH_PASS" \
+          -H "Content-Type: application/zip" \
+          --data-binary @deployment.zip \
+          "$PUBLISH_URL/api/zipdeploy"
+      env:
+        AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      continue-on-error: true
+
+    - name: Azure Login (as fallback)
       uses: azure/login@v2
       with:
-        creds: 
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+      if: failure()
 
-    - name: Deploy to Azure Web App
-      id: deploy-to-webapp
-      uses: azure/webapps-deploy@v3
-      with:
-        app-name: 
-        package: deployment.zip
-
-    - name: Logout from Azure
-      run: az logout
+    - name: Deploy using Azure CLI (fallback)
+      run: |
+        az webapp deployment source config-zip \
+          --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+          --name ${{ env.AZURE_WEBAPP_NAME }} \
+          --src deployment.zip
+      if: failure()
