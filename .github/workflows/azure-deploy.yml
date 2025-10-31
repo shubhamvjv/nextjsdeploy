@@ -40,7 +40,7 @@ jobs:
       run: |
         cp package.json .next/standalone/
         cp -r .next/static .next/standalone/.next/
-        cp -r public .next/standalone/
+        if [ -d "public" ]; then cp -r public .next/standalone/; fi
         cd .next/standalone
         zip -r ../../deployment.zip .
 
@@ -78,3 +78,4 @@ jobs:
 
     - name: Logout from Azure
       run: az logout
+
